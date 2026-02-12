@@ -97,7 +97,7 @@ export const inspectionCategories = [
   },
 ] as const;
 
-export const shifts = ["Morning (06:00-14:00)", "Afternoon (14:00-22:00)", "Night (22:00-06:00)"];
+export const shifts = ["Morning (08:00-16:00)", "Afternoon (16:00-00:00)", "Night (00:00-08:00)"];
 
 export const maintenanceChecklist = [
   { id: "inspection", label: "Visual inspection completed", icon: "Eye" },
