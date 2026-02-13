@@ -4,6 +4,7 @@ import React, { createContext, useContext, useState, useCallback, useEffect, typ
 import type { InspectionData, AbnormalData, SavedInspection, Photo, MaintenanceSubmitData } from "./types";
 import { STORAGE_KEYS, inspectionCategories } from "./constants";
 import { generateId, determineStatus, getHighestRisk } from "./helpers";
+import { dataService } from "./data-service";
 
 interface InspectionStore {
   currentView: string;
@@ -16,15 +17,17 @@ interface InspectionStore {
   setSavedInspections: React.Dispatch<React.SetStateAction<SavedInspection[]>>;
   showReport: boolean;
   setShowReport: (show: boolean) => void;
+  isLoading: boolean;
   startNewInspection: () => void;
   handleStart: () => void;
   updateCategory: (id: string, field: string, value: unknown) => void;
   calcSummary: () => { totalFindings: number; highRiskItems: number; riskBreakdown: Record<string, number> };
-  saveToStorage: () => void;
-  saveInspectionToList: (photos: Photo[]) => string;
-  updateInspectionStatus: (id: string, newStatus: string) => void;
-  updateMachineCase: (id: string, maintenanceData: MaintenanceSubmitData) => void;
+  saveToStorage: () => Promise<void>;
+  saveInspectionToList: (photos: Photo[]) => Promise<string>;
+  updateInspectionStatus: (id: string, newStatus: string) => Promise<void>;
+  updateMachineCase: (id: string, maintenanceData: MaintenanceSubmitData) => Promise<void>;
   clearStorage: () => void;
+  loadInspections: () => Promise<void>;
 }
 
 const InspectionContext = createContext<InspectionStore | null>(null);
@@ -49,6 +52,7 @@ const defaultAbnormalData: AbnormalData = {
 
 export function InspectionProvider({ children }: { children: ReactNode }) {
   const [isHydrated, setIsHydrated] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [currentView, setCurrentView] = useState("home");
   const [showReport, setShowReport] = useState(false);
 
@@ -56,12 +60,30 @@ export function InspectionProvider({ children }: { children: ReactNode }) {
   const [inspectionData, setInspectionData] = useState<InspectionData>(defaultInspectionData);
   const [abnormalData, setAbnormalData] = useState<AbnormalData>(defaultAbnormalData);
 
-  // Load from localStorage after hydration
+  // Load from database after hydration
+  const loadInspections = useCallback(async () => {
+    try {
+      setIsLoading(true);
+      const data = await dataService.getInspections();
+      setSavedInspections(data || []);
+      // Also cache in localStorage as backup
+      localStorage.setItem(STORAGE_KEYS.SAVED_INSPECTIONS, JSON.stringify(data || []));
+    } catch (e) {
+      console.error("Error loading inspections from database:", e);
+      // Fall back to localStorage
+      try {
+        const savedList = localStorage.getItem(STORAGE_KEYS.SAVED_INSPECTIONS);
+        if (savedList) setSavedInspections(JSON.parse(savedList));
+      } catch (err) {
+        console.error("Error loading from localStorage:", err);
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     try {
-      const savedList = localStorage.getItem(STORAGE_KEYS.SAVED_INSPECTIONS);
-      if (savedList) setSavedInspections(JSON.parse(savedList));
-
       const savedInspection = localStorage.getItem(STORAGE_KEYS.INSPECTION_DATA);
       if (savedInspection) setInspectionData(JSON.parse(savedInspection));
 
@@ -72,6 +94,12 @@ export function InspectionProvider({ children }: { children: ReactNode }) {
     }
     setIsHydrated(true);
   }, []);
+
+  useEffect(() => {
+    if (isHydrated) {
+      loadInspections();
+    }
+  }, [isHydrated, loadInspections]);
 
   const initCategories = useCallback(() => {
     const cats: Record<string, { findings: string; riskLevel: string; machine: string; floor: string; checklistItems: Record<string, boolean> }> = {};
@@ -130,83 +158,119 @@ export function InspectionProvider({ children }: { children: ReactNode }) {
     return { totalFindings, highRiskItems, riskBreakdown };
   }, [inspectionData.categories]);
 
-  const saveToStorage = useCallback(() => {
+  const saveToStorage = useCallback(async () => {
     localStorage.setItem(STORAGE_KEYS.INSPECTION_DATA, JSON.stringify(inspectionData));
     localStorage.setItem(STORAGE_KEYS.ABNORMAL_DATA, JSON.stringify(abnormalData));
+    // Optionally save to database here if needed
   }, [inspectionData, abnormalData]);
 
   const saveInspectionToList = useCallback(
-    (photos: Photo[] = []) => {
-      const newInspection: SavedInspection = {
-        id: generateId(),
-        date: inspectionData.date,
-        shift: inspectionData.shift,
-        inspector: inspectionData.inspector,
-        categories: inspectionData.categories,
-        abnormalData: abnormalData,
-        photos: photos,
-        status: determineStatus(inspectionData.categories),
-        severity: getHighestRisk(inspectionData.categories),
-        createdAt: new Date().toISOString(),
-        type: abnormalData.processType || "General Inspection",
-        description: abnormalData.description || "Safety inspection completed",
-        machine: Object.values(inspectionData.categories).find((c) => c.machine)?.machine || "",
-        floor: Object.values(inspectionData.categories).find((c) => c.floor)?.floor || "",
-        workflowStage: abnormalData.workflowStage,
-        priority: abnormalData.priority,
-        qualityImpact: abnormalData.qualityImpact,
-      };
+    async (photos: Photo[] = []) => {
+      try {
+        const newInspection: SavedInspection = {
+          id: generateId(),
+          date: inspectionData.date,
+          shift: inspectionData.shift,
+          inspector: inspectionData.inspector,
+          categories: inspectionData.categories,
+          abnormalData: abnormalData,
+          photos: photos,
+          status: determineStatus(inspectionData.categories),
+          severity: getHighestRisk(inspectionData.categories),
+          createdAt: new Date().toISOString(),
+          type: abnormalData.processType || "General Inspection",
+          description: abnormalData.description || "Safety inspection completed",
+          machine: Object.values(inspectionData.categories).find((c) => c.machine)?.machine || "",
+          floor: Object.values(inspectionData.categories).find((c) => c.floor)?.floor || "",
+          workflowStage: abnormalData.workflowStage,
+          priority: abnormalData.priority,
+          qualityImpact: abnormalData.qualityImpact,
+        };
 
-      const updatedList = [newInspection, ...savedInspections];
-      setSavedInspections(updatedList);
-      localStorage.setItem(STORAGE_KEYS.SAVED_INSPECTIONS, JSON.stringify(updatedList));
-      return newInspection.id;
+        // Save to database
+        await dataService.createInspection(newInspection);
+
+        const updatedList = [newInspection, ...savedInspections];
+        setSavedInspections(updatedList);
+        localStorage.setItem(STORAGE_KEYS.SAVED_INSPECTIONS, JSON.stringify(updatedList));
+        return newInspection.id;
+      } catch (e) {
+        console.error("Error saving inspection:", e);
+        throw e;
+      }
     },
     [inspectionData, abnormalData, savedInspections],
   );
 
   const updateInspectionStatus = useCallback(
-    (id: string, newStatus: string) => {
-      const updatedList = savedInspections.map((ins) => {
-        if (ins.id === id) {
-          return {
-            ...ins,
-            status: newStatus,
-            closedAt: newStatus === "closed" ? new Date().toISOString() : ins.closedAt,
-          };
-        }
-        return ins;
-      });
-      setSavedInspections(updatedList);
-      localStorage.setItem(STORAGE_KEYS.SAVED_INSPECTIONS, JSON.stringify(updatedList));
+    async (id: string, newStatus: string) => {
+      try {
+        const updatedData = {
+          status: newStatus,
+          closedAt: newStatus === "closed" ? new Date().toISOString() : undefined,
+        };
+        await dataService.updateInspection(id, updatedData);
+
+        const updatedList = savedInspections.map((ins) => {
+          if (ins.id === id) {
+            return {
+              ...ins,
+              status: newStatus,
+              closedAt: newStatus === "closed" ? new Date().toISOString() : ins.closedAt,
+            };
+          }
+          return ins;
+        });
+        setSavedInspections(updatedList);
+        localStorage.setItem(STORAGE_KEYS.SAVED_INSPECTIONS, JSON.stringify(updatedList));
+      } catch (e) {
+        console.error("Error updating inspection status:", e);
+        throw e;
+      }
     },
     [savedInspections],
   );
 
   const updateMachineCase = useCallback(
-    (id: string, maintenanceData: MaintenanceSubmitData) => {
-      const updatedList = savedInspections.map((ins) => {
-        if (ins.id === id) {
-          return {
-            ...ins,
-            status: maintenanceData.status,
-            machineCase: {
-              ...ins.machineCase,
-              checklist: maintenanceData.checklist,
-              replacedParts: maintenanceData.replacedParts,
-              estimatedTime: maintenanceData.estimatedTime,
-              actualTime: maintenanceData.actualTime,
-              technicianNotes: maintenanceData.technicianNotes,
-              technicianName: maintenanceData.technicianName,
-              completedAt: maintenanceData.status === "closed" ? new Date().toISOString() : null,
-              updatedAt: new Date().toISOString(),
-            },
-          };
-        }
-        return ins;
-      });
-      setSavedInspections(updatedList);
-      localStorage.setItem(STORAGE_KEYS.SAVED_INSPECTIONS, JSON.stringify(updatedList));
+    async (id: string, maintenanceData: MaintenanceSubmitData) => {
+      try {
+        await dataService.updateMaintenanceRecord({
+          inspection_id: id,
+          checklist: maintenanceData.checklist,
+          replaced_parts: maintenanceData.replacedParts,
+          estimated_time: maintenanceData.estimatedTime,
+          actual_time: maintenanceData.actualTime,
+          technician_notes: maintenanceData.technicianNotes,
+          technician_name: maintenanceData.technicianName,
+          status: maintenanceData.status,
+        });
+
+        const updatedList = savedInspections.map((ins) => {
+          if (ins.id === id) {
+            return {
+              ...ins,
+              status: maintenanceData.status,
+              machineCase: {
+                ...ins.machineCase,
+                checklist: maintenanceData.checklist,
+                replacedParts: maintenanceData.replacedParts,
+                estimatedTime: maintenanceData.estimatedTime,
+                actualTime: maintenanceData.actualTime,
+                technicianNotes: maintenanceData.technicianNotes,
+                technicianName: maintenanceData.technicianName,
+                completedAt: maintenanceData.status === "closed" ? new Date().toISOString() : null,
+                updatedAt: new Date().toISOString(),
+              },
+            };
+          }
+          return ins;
+        });
+        setSavedInspections(updatedList);
+        localStorage.setItem(STORAGE_KEYS.SAVED_INSPECTIONS, JSON.stringify(updatedList));
+      } catch (e) {
+        console.error("Error updating maintenance case:", e);
+        throw e;
+      }
     },
     [savedInspections],
   );
@@ -243,6 +307,7 @@ export function InspectionProvider({ children }: { children: ReactNode }) {
         setSavedInspections,
         showReport,
         setShowReport,
+        isLoading,
         startNewInspection,
         handleStart,
         updateCategory,
@@ -252,6 +317,7 @@ export function InspectionProvider({ children }: { children: ReactNode }) {
         updateInspectionStatus,
         updateMachineCase,
         clearStorage,
+        loadInspections,
       }}
     >
       {children}

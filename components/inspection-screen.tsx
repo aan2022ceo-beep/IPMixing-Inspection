@@ -106,8 +106,8 @@ interface InspectionScreenProps {
   setAbnormalData: React.Dispatch<React.SetStateAction<AbnormalData>>;
   onComplete: () => void;
   onBack: () => void;
-  onSave: () => void;
-  onSaveToList: (photos: Photo[]) => string;
+  onSave: () => Promise<void>;
+  onSaveToList: (photos: Photo[]) => Promise<string>;
 }
 
 export function InspectionScreen({
@@ -132,6 +132,7 @@ export function InspectionScreen({
   });
   const [saveStatus, setSaveStatus] = useState("");
   const [savedId, setSavedId] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const galleryInputRef = useRef<HTMLInputElement>(null);
 
@@ -184,20 +185,38 @@ export function InspectionScreen({
     });
   };
 
-  const handleSave = () => {
-    onSave();
-    savePhotosToStorage(photos);
-    const newId = onSaveToList(photos);
-    setSavedId(newId);
-    setSaveStatus("saved");
-    setTimeout(() => setSaveStatus(""), 3000);
+  const handleSave = async () => {
+    try {
+      setIsSaving(true);
+      await onSave();
+      savePhotosToStorage(photos);
+      const newId = await onSaveToList(photos);
+      setSavedId(newId);
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus(""), 3000);
+    } catch (e) {
+      console.error("Error saving inspection:", e);
+      setSaveStatus("error");
+      setTimeout(() => setSaveStatus(""), 3000);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  const handleSaveDraft = () => {
-    onSave();
-    savePhotosToStorage(photos);
-    setSaveStatus("draft");
-    setTimeout(() => setSaveStatus(""), 2000);
+  const handleSaveDraft = async () => {
+    try {
+      setIsSaving(true);
+      await onSave();
+      savePhotosToStorage(photos);
+      setSaveStatus("draft");
+      setTimeout(() => setSaveStatus(""), 2000);
+    } catch (e) {
+      console.error("Error saving draft:", e);
+      setSaveStatus("error");
+      setTimeout(() => setSaveStatus(""), 3000);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const currentCategoryPhotos = photos.filter((p) => p.category === cat.id);
@@ -554,15 +573,25 @@ export function InspectionScreen({
           {/* Save Section */}
           <div className="rounded-[18px] border border-border bg-card p-[18px] lg:col-span-2">
             <div className="mb-2 flex gap-2.5">
-              <button onClick={handleSaveDraft} className="flex-1 rounded-xl border-2 border-border bg-surface-light px-4 py-3.5 text-sm font-semibold text-text-secondary transition-colors hover:bg-border">
-                {saveStatus === "draft" ? "Draft Saved!" : "Save Draft"}
+              <button 
+                onClick={handleSaveDraft} 
+                disabled={isSaving}
+                className="flex-1 rounded-xl border-2 border-border bg-surface-light px-4 py-3.5 text-sm font-semibold text-text-secondary transition-colors hover:bg-border disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isSaving ? "Saving..." : saveStatus === "draft" ? "Draft Saved!" : "Save Draft"}
               </button>
-              <button onClick={handleSave} className="flex-1 rounded-xl bg-info px-4 py-3.5 text-sm font-bold text-primary-foreground shadow-lg shadow-info/40 transition-all hover:opacity-90">
-                {saveStatus === "saved" ? "Submitted!" : "Submit & Save"}
+              <button 
+                onClick={handleSave} 
+                disabled={isSaving}
+                className="flex-1 rounded-xl bg-info px-4 py-3.5 text-sm font-bold text-primary-foreground shadow-lg shadow-info/40 transition-all hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isSaving ? "Saving..." : saveStatus === "saved" ? "Submitted!" : "Submit & Save"}
               </button>
             </div>
             <p className="mt-2 text-center text-xs text-muted-foreground">
-              {saveStatus === "saved" && savedId
+              {saveStatus === "error" 
+                ? "Error saving inspection. Please try again."
+                : saveStatus === "saved" && savedId
                 ? `Saved as ${savedId}`
                 : allPhotosCount > 0
                   ? `Total: ${allPhotosCount} photos across all categories`
