@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { sql } from '@neondatabase/serverless';
+import { getFiveM, createFiveM } from '@/lib/db';
+import { Pool } from '@neondatabase/serverless';
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 export async function GET(req: NextRequest) {
   try {
@@ -10,8 +13,8 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'inspection_id is required' }, { status: 400 });
     }
     
-    const fiveM = await sql`SELECT * FROM five_m WHERE inspection_id = ${inspectionId}`;
-    return NextResponse.json(fiveM.rows);
+    const fiveM = await getFiveM(inspectionId);
+    return NextResponse.json(fiveM);
   } catch (error) {
     console.error('Error fetching 5M analysis:', error);
     return NextResponse.json({ error: 'Failed to fetch 5M analysis' }, { status: 500 });
@@ -21,14 +24,8 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    
-    const result = await sql`
-      INSERT INTO five_m (inspection_id, man, method, machine, material, environment, immediate_action)
-      VALUES (${body.inspection_id}, ${body.man}, ${body.method}, ${body.machine}, ${body.material}, ${body.environment}, ${body.immediate_action})
-      RETURNING *
-    `;
-    
-    return NextResponse.json(result.rows[0], { status: 201 });
+    const analysis = await createFiveM(body);
+    return NextResponse.json(analysis, { status: 201 });
   } catch (error) {
     console.error('Error creating 5M analysis:', error);
     return NextResponse.json({ error: 'Failed to create 5M analysis' }, { status: 500 });
@@ -36,25 +33,23 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PUT(req: NextRequest) {
+  const client = await pool.connect();
   try {
     const body = await req.json();
     
-    const result = await sql`
-      UPDATE five_m 
-      SET 
-        man = COALESCE(${body.man}, man),
-        method = COALESCE(${body.method}, method),
-        machine = COALESCE(${body.machine}, machine),
-        material = COALESCE(${body.material}, material),
-        environment = COALESCE(${body.environment}, environment),
-        immediate_action = COALESCE(${body.immediate_action}, immediate_action)
-      WHERE inspection_id = ${body.inspection_id}
-      RETURNING *
-    `;
+    const result = await client.query(
+      `UPDATE five_m 
+       SET man = $1, method = $2, machine = $3, material = $4, environment = $5, immediate_action = $6
+       WHERE inspection_id = $7
+       RETURNING *`,
+      [body.man, body.method, body.machine, body.material, body.environment, body.immediate_action, body.inspection_id]
+    );
     
     return NextResponse.json(result.rows[0]);
   } catch (error) {
     console.error('Error updating 5M analysis:', error);
     return NextResponse.json({ error: 'Failed to update 5M analysis' }, { status: 500 });
+  } finally {
+    client.release();
   }
 }
